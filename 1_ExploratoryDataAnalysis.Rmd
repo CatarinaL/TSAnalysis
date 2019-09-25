@@ -1,0 +1,206 @@
+---
+title: "Asylum Seekers Entering the EU"
+output:
+  html_document:
+    df_print: paged
+---
+#  1. Exploratory Data Analysis  
+  
+***
+  
+## 1.1. Data Source, Headers and Labels  
+
+***
+
+**DATASET** "Asylum and first time asylum applicants by citizenship, age and sex Monthly data (rounded) [migr_asyappctzm]"  
+**LAST UPDATE* **19.03.19 06:51:45   
+**EXTRACTION DATE** 19.03.19 13:19:35   
+**SOURCE OF DATA** [Eurostat](http://appsso.eurostat.ec.europa.eu/nui/show.do?query=BOOKMARK_DS-055296_QID_3F379849_UID_-3F171EB0&layout=TIME,C,X,0;GEO,L,Y,0;CITIZEN,L,Z,0;SEX,L,Z,1;AGE,L,Z,2;ASYL_APP,L,Z,3;UNIT,L,Z,4;INDICATORS,C,Z,5;&zSelection=DS-055296UNIT,PER;DS-055296SEX,T;DS-055296ASYL_APP,ASY_APP;DS-055296CITIZEN,EXT_EU28;DS-055296INDICATORS,OBS_FLAG;DS-055296AGE,TOTAL;&rankName1=UNIT_1_2_-1_2&rankName2=AGE_1_2_-1_2&rankName3=CITIZEN_1_2_-1_2&rankName4=INDICATORS_1_2_-1_2&rankName5=ASYL-APP_1_2_-1_2&rankName6=SEX_1_2_-1_2&rankName7=TIME_1_0_0_0&rankName8=GEO_1_2_0_1&sortC=ASC_-1_FIRST&rStp=&cStp=&rDCh=&cDCh=&rDM=true&cDM=true&footnes=false&empty=false&wai=false&time_mode=NONE&time_most_recent=false&lang=EN&cfo=%23%23%23%2C%23%23%23.%23%23%23)  
+
+***
+
+Attribute       |   Values
+-------         |   -------
+TIME            | "2008M01" to "2018M12"
+GEO             | "European Union - 28 countries"
+CITIZEN         | "Extra-EU28"
+SEX             | "Total", "Males", "Females"
+AGE             | "Total"
+ASYL_APP        | "Asylum applicant", "First time applicant"
+UNIT"           | "Person"
+
+No footnotes available.
+
+Available flags: 
+
+* b,"break in time series"
+* c,"confidential"
+* d,"definition differs, see metadata"
+* e,"estimated" 
+* f,"forecast"
+* n,"not significant"
+* p,"provisional"
+* r,"revised"
+* s,"Eurostat estimate"
+* u,"low reliability"
+* z,"not applicable"
+* Special value: ":","not available"
+
+***
+
+## 1.2 Reading the data
+
+```{r}
+#set working directory
+#setwd("~/DIT/Time Series 2 Forecasting/Project/2-Trend and seasonality")
+
+#Graphical Parameters: For colours, color specifications, check colors() or, even better, demo(colors)
+
+library(readr)
+library(forecast)
+library(tseries)
+library(mgcv)
+
+
+datafile <- read_csv("migr_asylum_applicant_EU28/migr_asyappctzm_1_Data.csv")
+
+head(datafile)
+```
+All column names:
+
+```{r}
+names(datafile)
+```
+Convert the values into a time series
+Plot Values against Time
+```{r}
+values = datafile[9]
+values = ts(values, start=2008, frequency=12)
+ts.plot(values, main="Asylum Applications to EU28 Countries 2008-2018", ylab="Number of Applications")
+```
+***
+
+# 2. Smoothing the data
+
+We can use smoothing to reduce the volatility in our observed data and making it into a more stable and predictable series.
+
+## Trend Analysis - non-parametric
+```{r}
+#Create equally spaced time points for fitting trends
+time.pts = c(1:length(values))
+time.pts = c(time.pts - min(time.pts))/max(time.pts)
+``` 
+
+### Fitting a moving average, kernel smoothing, loess and splines smoothing
+
+```{r}
+#define mav/smoothing methods, and fit
+values.mafilter.fit = filter(values, filter = rep(1/4, 4), sides = 2)
+
+
+ma.fit = ma(values, order=2)
+values.fit.ma = ts(ma.fit, start=2008, frequency=12)
+
+ksmooth.fit = ksmooth(time.pts, values, kernel = "box", bandwidth = 0.2)
+values.fit.ksmooth = ts(ksmooth.fit$y,start=2008,frequency=12)
+
+loess.fit = loess(as.matrix(values)~time.pts, data=values, span=0.2)
+values.fit.loess = ts(predict(loess.fit), start=2008, frequency=12)
+
+gam.fit = gam(values~s(time.pts))
+values.fit.gam = ts(fitted(gam.fit),start=2008,frequency=12) 
+```
+
+```{r}
+# plot fits against values
+ts.plot(values,ylab="# of Applications", main="Observed Values vs MA vs Kernel smoothing")
+lines(values.fit.ksmooth,lwd=1, lty=4 ,col="purple")
+lines(values.mafilter.fit, col="red")
+lines(values.fit.loess, col="orange", lty=4)
+lines(values.fit.gam, col="violet")
+lines(values.fit.ma, col="cyan")
+legend(x="topleft",c("kernel smoothing", "filter", "loess", "gam", "mav"),lty = c(4, 1), col=c("purple","red", "orange", "violet", "cyan"))
+#values.fit.mav is the ma dataframe (type of the objects is float) with the transformed values for each entry
+#ablines is an a, b line graphing function, a is y intercept and b is slope
+```
+It's a matter of balancing smoothness to make predictability easier and accuracy. Pick filter(red) or moving average(cyan).
+
+***
+
+# 3. Decomposing the data
+
+Trend component, seasonal component and residuals (random/white noise). We assume this series is additive (instead of multiplicative).
+
+``` {r}
+values.ma.decomp = decompose(values.fit.ma, type=c("additive"))
+plot(values.ma.decomp)
+```
+
+A more detailed decomposition of this time-series can be seen below by using STL - Seasonal Decomposition of Time Series by LOESS:
+
+``` {r}
+values.decomp.stl <- stl(na.omit(values.fit.ma[, 1]), s.window="periodic")
+plot(values.decomp.stl)
+```
+
+Using the decomposed time series, we can subtract the $seasonal component from the data and de-seasonalize it - which can be useful to apply an ARIMA process, instead of SARIMA.
+
+```{r}
+values.deseason = seasadj(values.decomp.stl)
+plot(values.deseason, main="Deseasonalized time series")
+print(values.decomp.stl)
+```
+The additive seasonal coefficients for each month are:
+
+Jan  -5309.7893  
+Feb  -5025.1317  
+Mar  -5391.2925  
+Apr  -5792.7941  
+May  -4342.8346  
+Jun   -747.0787  
+Jul   3294.3252  
+Aug   6789.0248  
+Sep   8908.2448  
+Oct   7890.9851  
+Nov   2875.5202  
+Dec  -3149.1758
+
+***
+# 4. Is the data stationary?
+
+> "If we fit a stationary model to data, we assume our data are a realization of a stationary process. So our first step in an analysis should be to check whether there is any evidence of a trend or seasonal effects and, if there is, remove them."
+
+``` {r}
+values.fit.ma <- ts(na.omit(values.fit.ma), frequency=12, start=2008)
+acf(values.fit.ma)
+adf.test(values.fit.ma)
+```
+
+The data doesn´t appear to be stationary - it is apparent that mean and variance change over time. Looking at the ACF plot we can also reach the same conclusion, given there is no sharp drop in the values, but instead a smooth decay. So we need to transform our data to make it more stationary in order to use it for ARIMA models, for instance. This is further confirmed by running the ADF test: with a p-value = 0.7279 we can't reject the null hypothesis of non-stationarity.
+
+### Making the data stationary
+
+Some of the possible mathematical transforms include: differencing, log (and Box-Cox), moving average, percent change, lag, or cumulative sum.
+
+### Differencing
+```{r}
+values_diff1 = diff(values.fit.ma)
+values_diff2 = diff(values_diff1)
+tm <- cbind(values, values_diff1, values_diff2)
+plot(tm)
+```
+
+A first difference seems to suffice here, but let's again check using an ACF plot and ADF test:
+``` {r}
+acf(values_diff1)
+adf.test(values_diff1)
+```
+
+Both the ACF plot and ADF test confirm non-stationarity after the first difference. There's a sort of pattern going on on this ACF plot, probably due to the seasonal component. We can diference and inspect the deseasonalized data as well.
+
+
+
+
+***
+# 5. Seasonality 
+

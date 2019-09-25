@@ -1,0 +1,708 @@
+---
+title: "Non-seasonal Data - High Tech Patent Applications in the EU"
+output:
+  pdf_document:
+    df_print: paged
+  html_document:
+    df_print: paged
+---
+#  1. Exploratory Data Analysis  
+  
+***
+  
+## 1.1. Data Source, Headers and Labels  
+
+***
+```{r}
+#set working directory
+setwd("~/DIT/Time Series 2 Forecasting/Project/1-Trend only")
+
+#Graphical Parameters: For colours, color specifications, check colors() or, even better, demo(colors)
+
+library(readr)
+library(forecast)
+library(tseries)
+
+patentEu28Data <- read_csv("pat_ep_ntec/pat_ep_ntec_1_Data.csv", 
+                           col_types = cols(Value = col_number()))
+
+names(patentEu28Data) #check column names 
+```
+
+### Plotting the Time Series
+
+```{r}
+head(patentEu28Data[2], 1) #check starting time 
+values = patentEu28Data[5]
+```
+The starting date for this time series is 1977.
+
+```{r}
+
+values = ts(values, start=1977, frequency=1)
+ts.plot(values, main="EU28 High Tech Patents", ylab="Number of Applications", type="l")
+values
+```
+Separating the data into a "training set" with the values up until 2010, and holding out the last three observed values to run diagnostics on the accuracy of a chosen model:
+```{r}
+start(values)
+end(values)
+
+values.holdout <- window(values, start=2011, end=2013)
+values <- window(values, end=2010)
+```
+
+Visually we now have:
+```{r}
+ts.plot(cbind(values, values.holdout), main="EU28 High Tech Patents - 1977 to 2010",
+        ylab="Number of Applications", type="l", col=c("tomato", "tan"), lty=c(1, 2))
+
+```
+
+Checking for missing values:
+```{r}
+#check if there are missing values
+complete <- TRUE
+for(c in complete.cases(values)) {
+  if(!c){
+    complete == FALSE
+  }
+}
+if(complete){
+  print("No missing values")
+} else {
+  print ("There are missing values, use omit NA")
+}
+
+```
+## 2. Is this data stationary?
+
+The stationarity property of the data (before or after transforms) will determine how we can model it. For models like ARIMA it's required that the data can be made stationary.
+
+The data doesn´t appear to be stationary - just by observing the plot, it is apparent that average and variance change over time. So we need to transform our series.
+Some of the possible mathematical transforms include: differencing, log (and Box-Cox), moving average, percent change, lag, or cumulative sum.
+
+### Checking stationarity using ADF and KPSS tests
+We can more accurately check if the time series is stationary by using the Augmented Dickey-Fuller Test (adf test). A p-Value of less than 0.05 in adf.test() indicates that it is stationary. KPSS test is used in complement to ADF. If the result from both tests suggests that the time series in stationary, then it probably is.
+
+>"KPSS-type tests are intended to complement unit root tests, such as the Dickey–Fuller tests. By testing both the unit root hypothesis and the stationarity hypothesis, one can distinguish series that appear to be stationary, series that appear to have a unit root, and series for which the data (or the tests) are not sufficiently informative to be sure whether they are stationary or integrated."
+
+KPSS reference: [D. Kwiatkowski et al., Testing the null hypothesis of trend stationarity (1992)](http://debis.deu.edu.tr/userweb/onder.hanedar/dosyalar/kpss.pdf)
+
+#### PP tests
+Alternatively or additionally, test for the null hypothesis that the series has a unit root (alternative hypothesis being that it is stationary). Integrates DF test.
+
+```{r}
+#library(tseries)
+adf.test(values) # p-value < 0.05 indicates the TS is stationary
+kpss.test(values, null="Trend") # trend/level stationarity test
+kpss.test(values, null="Level")
+pp.test(values, lshort = FALSE)
+``` 
+ADF Null hypothesis: Time series is not stationary.
+ADF test shows we can't reject the null, this time-series is not stationary.
+
+KPSS Null="Trend": The time series is trend-stationary.
+KPSS, with null hypothesis that trend is stationary, returns a p-value of 0.08, so we don't reject the null. It tells us that this series is trend-stationary - the data is stationary around the trend, it follows a straight line time trend with stationary errors. 
+If the series is level stationary, it is akin to a random walk.
+
+KPSS Null="Level": The time series stationary.
+The p-value is below 0.01, so we reject that this series is stationary.
+
+So far, this is on par with our first intuition looking at the plot and in-line with dealing with real world untransformed series data.
+
+***
+
+## 2.1. Transforms
+
+### Difference
+```{r}
+values_diff1 = diff(values, lag = 1)
+values_diff2 = diff(values_diff1)
+tdiff <- cbind(values, values_diff1, values_diff2)
+plot(tdiff, main="Differencing")
+```
+Maybe a second difference, looking at adf and acf we can confirm this:
+
+```{r}
+par(mfrow=c(2,1))
+acf(values_diff1)
+adf.test(values_diff1)
+acf(values_diff2)
+adf.test(values_diff2)
+```
+```{r}
+par(mfrow=c(2,1))
+pacf(values_diff1)
+pacf(values_diff2)
+```
+### Log
+
+```{r}
+values_log = log(values)
+plot(cbind(values, values_log))
+
+```
+### Log Difference
+
+```{r}
+values_logdiff1 = diff(log(values), lag = 1)
+values_logdiff2 = diff(values_logdiff1, lag = 1)
+tm <- cbind(values, values_logdiff1, values_logdiff2)
+plot(tm)
+```
+
+Looking at the above, ***we can consider that taking the second difference of the values might be enough.***. In this case, having more values would actually be detrimental to our analysis and forecast.
+
+```{r}
+plot(values_logdiff2, main="Truncated ts")
+values.logdiff.trunc <- window(values_logdiff2, start=1981, end=2012)
+lines(values.logdiff.trunc, col="red")
+```
+
+### 2.2 Check stationarity of different transforms
+
+We can check if these transformations rendered the original time series values stationary, by checking the ACF and/or using ADF and KPSS again. 
+
+
+####Using ACF
+A stationary time series will have the autocorrelation fall to zero fairly quickly but for a non-stationary series it drops gradually.
+
+```{r}
+acf(values)
+acf(values.logdiff.trunc)
+```
+
+Using ACF, values.logdiff.trunc seems to be stationary
+
+###Using KPSS, ADF and unit root tests
+Let's look at KPSS and ADF
+
+```{r}
+adf.test(values.logdiff.trunc, k=1)
+kpss.test(values.logdiff.trunc)
+pp.test(values.logdiff.trunc, alternative="stationary")
+```
+Although ADF is not returning a significant value for the stationarity hypothesis, Philip-Perron and KPSS tests indicate this time series to be stationary.
+
+```{r}
+pacf(values.logdiff.trunc)
+acf(values.logdiff.trunc)
+```
+
+**TODO:** Test KPSS over a range of lags
+Examples
+```{r}
+x <- rnorm(1000)  # is level stationary
+kpss.test(x)
+
+y <- cumsum(x)  # has unit root
+kpss.test(y)
+
+x <- 0.3*(1:1000)+rnorm(1000)  # is trend stationary
+kpss.test(x, null = "Trend")
+```
+
+#### Apply to our transforms
+Recap:
+We can more accurately check if the time series is stationary by using the Augmented Dickey-Fuller Test (adf test). *A p-Value of less than 0.05 in adf.test() indicates that it is stationary - alternative hypothesis: stationary is significant, reject null hypothesis.* KPSS test is used in complement to ADF. If the result from both tests suggests that the time series in stationary, then it probably is.
+
+##### logdiff1
+```{r}
+# using our transforms
+adf.test(values_logdiff1) # p-value < 0.05 indicates the TS is stationary
+kpss.test(values_logdiff1, null="Trend", lshort = FALSE) # trend/level stationarity test
+
+``` 
+ADF test shows the data after a log diff is not stationary. 
+
+####logdiff2 (truncated)
+```{r}
+
+#values.logdiff.trunc 
+adf.test(values.logdiff.trunc)
+kpss.test(values.logdiff.trunc)
+```
+Still not getting stationarity with the truncated series and 2nd difference of log values...
+This data seems very hard to stationarize, so it might require us to fit a model that is not ARIMA, but instead some sort of decomposition, or smoothing, or regression model.
+
+##Box-Cox
+
+TODO
+
+```{r}
+values.boxcox <- BoxCox(values, lambda="auto")
+plot(cbind(values, values.boxcox))
+acf(values.boxcox)
+```
+
+***
+
+#3. Decomposition
+
+Decomposition of the series into trend and random components. (Can't use decompose() or stl() here because there is no seasonality component - fit a non parametric method instead to estimate a trend)
+
+##1.  Trend estimation
+
+Non-parametric: One approach is to estimate the trend with a smoothing procedure such as moving averages. (See Lesson 5.2 for more on that.) With this approach no equation is used to describe trend.
+Parametric: The second approach is to model the trend with a regression equation.
+
+## Smoothing
+
+>To estimate the trend component of a non-seasonal time series that can be described using an additive model, it is common to use a smoothing method, such as calculating the simple moving average of the time series.
+
+>The various exponential smoothing models are special cases of ARIMA models and can be fitted with ARIMA software.  In particular, the simple exponential smoothing model is an ARIMA(0,1,1) model, Holt’s linear smoothing model is an ARIMA(0,2,2) model, and the damped trend model is an ARIMA(1,1,2) model.
+
+>Linear, quadratic, or exponential trend line models are other options for extrapolating a deseasonalized series, but they rarely outperform random walk, smoothing, or ARIMA models on business data.
+
+### Fit a moving average
+
+```{r}
+
+
+#Create equally spaced time points for fitting trends
+time.pts = c(1:length(values))
+time.pts = c(time.pts - min(time.pts))/max(time.pts)
+```
+
+```{r}
+#using moving average method from forecast package
+ma.values <- ma(values, order=4, centre = FALSE)
+
+#define mav method and fit
+mav.fit = ksmooth(time.pts, values, kernel = "box", bandwidth = 1.1)
+values.fit.mav = ts(mav.fit$y,start=1977,frequency=1)
+
+# plot mav.fit against values
+ts.plot(values,ylab="# of PAtent Applications", main="Observed Values vs MA vs Kernel smoothing")
+lines(ma.values,lwd=2, lty=4, col="violet")
+lines(values.fit.mav, col="red")
+legend(x="topleft", c("Observed", "MA", "K smoothing"), col=c("gray10","violet", "red"), lty=c(1, 4))
+
+#values.fit.mav is the mav dataframe (type of the objects is float) with the transformed values for each entry
+#ablines is an a, b line graphing function, a is y intercept and b is slope
+```
+
+###LOESS
+
+locally estimated scatterplot smoothing
+
+>Loess Regression is the most common method used to smoothen a volatile time series. It is a non-parametric methods where least squares regression is performed in localized subsets, which makes it a suitable candidate for smoothing any numerical vector.
+
+Span controls the degree of smoothing (greater values, smoother fit)
+We won't use predictor/explanatory variables, just the years of the observations.
+ 
+```{r}
+loess.fit = loess(as.matrix(values)~time.pts, degree=2)
+values.fit.loess = ts(fitted(loess.fit),start=1977)
+#plot(values.fit.loess)
+
+# plot LOESS against observ and ma
+ts.plot(values,ylab="# of PAtent Applications", main="Observed Values vs MA vs LOESS")
+lines(ma.values,lwd=2, lty=4, col="violet")
+lines(values.fit.loess, col="red")
+legend(x="topleft", c("Observed", "MA", "LOESS"), col=c("gray10","violet", "red"), lty=c(1, 4))
+```
+Tweaking span (default value is 0.75):
+
+```{r}
+loess_fit25 <- loess(as.matrix(values)~time.pts, data=values, span=0.25) #25%smoothing span
+loess_fit50 <- loess(as.matrix(values)~time.pts, data=values, span=0.5) #50%smoothing span
+
+smoothed.values.loess25 <- ts(fitted(loess_fit25), start=1977)
+smoothed.values.loess50 <- ts(predict(loess_fit50), start=1977)
+
+plot(values, type="b", lwd=4, col="gray85", main="EU28 Patents - LOESS parameters comparison")
+lines(smoothed.values.loess25, col="cyan", lwd=2, lty=1)
+lines(smoothed.values.loess50, col="coral", lwd=2)
+lines(values.fit.loess, col="plum", lwd=2)
+legend(x="topleft", c("25%","50%","75%"),lty = 1, col=c("cyan","coral","plum"))
+```
+
+####Finding optimal span
+Find span that minimizes sum of squared errors - residuals
+
+```{r}
+res.loess.75 <- sum(loess.fit$residuals^2)
+res.loess.50 <- sum(loess_fit25$residuals^2)
+res.loess.25 <- sum(loess_fit50$residuals^2)
+
+sprintf("Residuals (SSE) at span 0.75: %f", res.loess.75)
+sprintf("Residuals (SSE) at span 0.50: %f", res.loess.50)
+sprintf("Residuals (SSE) at span 0.25: %f", res.loess.25)
+```
+
+"Residuals (SSE) at span 0.75: 14737870.042897"
+"Residuals (SSE) at span 0.50: 287856.406508"
+"Residuals (SSE) at span 0.25: 4232049.516755"
+
+Loess at 50% span seems like a better fit than 0.25 or 0.75
+
+There are also some optimizer functions to find the minimum or maximum parameters, for instance:
+(Code adapted from http://r-statistics.co/Loess-Regression-With-R.html)
+
+```{r}
+# define function that returns the SSE
+calcSSE <- function(x, dts=values){
+  sse =0
+  print("hello")
+  loessMod <- try(loess(as.matrix(dts) ~ time.pts, data=dts, span=x), silent=T)
+  print("here")
+  res <- try(loessMod$residuals, silent=T)
+  if(class(res)!="try-error"){
+    if((sum(abs(res), na.rm=T) > 0)){
+      sse <- sum(res^2) 
+      print("over here")
+    }
+    
+  } else{
+    sse <- 99999
+    print("no else")
+  }
+  return(sse)
+}
+
+# Run optimizing function to find span that gives min span, starting at 0.155
+#optim(par=c(0.2), calcSSE, method="SANN") #this takes some time to run
+optimize(calcSSE, c(0.1, 0.75))
+```
+
+##Detrend
+2.  “De-trend” the series.  For an additive decomposition, this is done by subtracting the trend estimates from the series.  For a multiplicative decomposition, this is done by dividing the series by the trend values.
+
+Using MA and LOESS at 0.5 span
+
+```{r}
+plot(cbind(ma.values, smoothed.values.loess50), main = "Trend Component")
+
+```
+```{r}
+# plot LOESS against observ and ma
+ts.plot(values,ylab="# of PAtent Applications", main="Observed Values vs MA vs LOESS")
+lines(ma.values,lwd=2, lty=4, col="violet")
+lines(smoothed.values.loess50, col="red")
+legend(x="topleft", c("Observed", "MA (order 4)", "LOESS (span 0.5)"), col=c("gray10","violet", "red"), lty=c(1, 4))
+```
+##Random component
+3. The final step is to determine the random (irregular) component.
+
+```{r}
+values.rand.ma <- values-ma.values
+
+values.rand.loess <- ts(loess_fit50$residuals, start = 1977)
+
+plot(values.rand.loess, col="tomato", pty="l", main="Random component", ylim=c(1000, -1000))
+lines(values.rand.ma, lty=2)
+legend(x="topleft", legend=c("Values - MA estimated trend", "Values - LOESS estimated trend"), 
+       col=c("gray15", "tomato"), lty=c(2, 1))
+```
+
+The random component could be analyzed for such things as the mean location, or mean squared size (variance), or possibly even for whether the component is actually random or might be modeled with an ARIMA model.
+
+***
+
+# 4. Model Selection
+
+## Exponential Smoothing (ETS)
+
+For a time series that can be described using an additive model with constant level and no seasonality, we can use simple exponential smoothing to make short-term forecasts.
+(we can use our differenced series, but Holt's smoothing as we see next makes more sense here)
+
+####Holt-Winters
+
+```{r}
+values.hw <- HoltWinters(values_diff2, beta=FALSE, gamma=FALSE)
+values.hw
+#fitted(values.hw)
+plot(values.hw)
+values.hw$SSE
+```
+
+Holt's exponenetial smoothing is a better fit for the characteristic of this series, as it contemplates a trend componenet and no seasonality.
+
+```{r}
+values.hsmooth <- HoltWinters(values, gamma=FALSE)
+values.hsmooth
+#fitted(values.hw)
+plot(values.hsmooth)
+values.hsmooth$SSE
+```
+The estimated value of alpha and beta is 1.00 - "both are high, telling us that both the estimate of the current value of the level, and of the slope b of the trend component, are based mostly upon very recent observations in the time series. This makes good intuitive sense, since the level and the slope of the time series both change quite a lot over time." (https://a-little-book-of-r-for-time-series.readthedocs.io/en/latest/src/timeseries.html#decomposing-non-seasonal-data) 
+
+The value of the sum-of-squared-errors for the in-sample forecast errors is 4,778,807.
+
+```{r}
+forecast.values.hwsmooth <- forecast(values.hsmooth, h=5) #forecast next 5 years
+plot(forecast.values.hwsmooth)
+lines(values.holdout, col="tomato")
+```
+ETS(A,A,N): Holt’s linear method with additive errors
+
+Parameters for exponential smoothing can also be estimated automatically by using:
+
+for AAN
+```{r}
+values.fit.AANets <- ets(values, model="AAN")
+coef(values.fit.AANets)
+summary(values.fit.AANets)
+```
+
+for MAN
+```{r}
+values.fit.MANets <- ets(values, model="MAN")
+coef(values.fit.MANets)
+summary(values.fit.MANets)
+```
+
+Auto selection of ETS model
+```{r}
+values.fit.autoets <- ets(values, model="ZZZ")
+coef(values.fit.autoets)
+summary(values.fit.autoets)
+```
+
+Residuals of holt's smoothing 
+```{r}
+acf(na.omit(forecast.values.hwsmooth$residuals))
+Box.test(forecast.values.hwsmooth$residuals, type="Ljung-Box")
+plot(forecast.values.hwsmooth$residuals)
+
+```
+
+Residuals of AAN ETS - trend dampened
+```{r}
+acf(residuals(values.fit.AANets))
+Box.test(residuals(values.fit.AANets), type="Ljung-Box")
+accuracy(values.fit.AANets)
+plot(values.fit.AANets)
+#plot(forecast(values.fit.autoets, h=5))
+```
+no residuals autocorrelation
+MAPE at 12.06%, RMSE 367.8
+
+Residuals of ETS(MAN) - holt's with multiplicative errors
+```{r}
+acf(residuals(values.fit.MANets))
+Box.test(residuals(values.fit.MANets), type="Ljung-Box") #test alternative hypothesis that there is non-zero autocorrelations
+accuracy(values.fit.MANets)
+par(mfrow=c(2,2))
+acf(values.fit.MANets$residuals)
+pacf(values.fit.MANets$residuals)
+plot(values.fit.MANets$residuals)
+qqnorm(values.fit.MANets$residuals)
+qqline(values.fit.MANets$residuals, col="cyan")
+
+```
+good acf plot, confirmed by ljung-box (no autocorrelation in residuals)
+accuracy:mean absolute percent errors 4.76%, root mean sqr error 381.91
+
+
+##ARIMA
+If you do not choose seasonal adjustment (or if the data are non-seasonal), you may wish to use the ARIMA model  framework.  ARIMA models are a very general class of models that includes random walk, random trend, exponential smoothing, and autoregressive models as special cases. ***The conventional wisdom is that a series is a good candidate for an ARIMA model if (i) it can be stationarized by a combination of differencing and other mathematical transformations such as logging, and (ii) you have a substantial amount of data to work with: at least 4 full seasons in the case of seasonal data.*** (If the series cannot be adequately stationarized by differencing--e.g., if it is very irregular or seems to be qualitatively changing its behavior over time--or if you have fewer than 4 seasons of data, then you might be better off with a model that uses seasonal adjustment and some kind of simple averaging or smoothing.)
+
+###ARIMA(0, d, q)
+
+We already established we need the second difference to stationarize this series, so d=2.
+looking at the ACF and PACF:
+
+```{r}
+acf(values_diff2)
+pacf(values_diff2)
+```
+
+Auto arima
+
+```{r}
+auto.arima(values)
+```
+Auto ARIMA suggests only 1 difference, and looking at acf and pacf for the values after 1st difference, there seems to emerge an AR pattern (ACF decaying more slowly in a pattern, PACF spikes at lag 1). So taking the 2nd difference is probably overdifferencing
+
+```{r}
+kpss.test(values_diff1)
+pp.test(values_diff1)
+
+par(mfrow=c(2,1))
+pacf(values_diff1)
+acf(values_diff1)
+```
+
+```{r}
+values.fit.arima1_1_0 <- auto.arima(values)
+values.fit.arima1_2_0 <- arima(values, order=c(1,2,0))
+values.fit.arima0_2_1 <- arima(values, order=c(0,2,1)) 
+
+
+
+summary(values.fit.arima1_1_0)
+accuracy(values.fit.arima1_1_0)
+
+#arima 110 residuals analysis
+par(mfrow=c(2, 2))
+acf(values.fit.arima1_1_0$residuals)
+pacf(values.fit.arima1_1_0$residuals)
+plot(values.fit.arima1_1_0$residuals)
+qqnorm(values.fit.arima1_1_0$residuals)
+qqline(values.fit.arima1_1_0$residuals, col="cyan")
+
+```
+
+```{r}
+summary(values.fit.arima1_2_0)
+accuracy(values.fit.arima1_2_0)
+
+#arima 120 residuals analysis
+par(mfrow=c(2,2))
+acf(values.fit.arima1_2_0$residuals)
+pacf(values.fit.arima1_2_0$residuals)
+plot(values.fit.arima1_2_0$residuals)
+qqnorm(values.fit.arima1_2_0$residuals)
+qqline(values.fit.arima1_2_0$residuals, col="cyan")
+
+
+summary(values.fit.arima0_2_1)
+accuracy(values.fit.arima0_2_1)
+
+#arima 021 residuals analysis
+par(mfrow=c(2,2))
+acf(values.fit.arima0_2_1$residuals)
+pacf(values.fit.arima0_2_1$residuals)
+plot(values.fit.arima0_2_1$residuals)
+qqnorm(values.fit.arima0_2_1$residuals)
+qqline(values.fit.arima0_2_1$residuals, col="cyan")
+```
+
+
+```{r}
+values.fit.arima0_2_2 <- arima(values, order=c(0,2,2)) #holt
+values.fit.arima0_2_4 <- arima(values, order=c(0,2,4)) 
+
+
+summary(values.fit.arima0_2_2)
+accuracy(values.fit.arima0_2_2)
+# BIC
+AIC(values.fit.arima0_2_2, k=log(length(values)))
+
+#arima 021 residuals analysis
+par(mfrow=c(2,2))
+acf(values.fit.arima0_2_2$residuals)
+pacf(values.fit.arima0_2_2$residuals)
+plot(values.fit.arima0_2_2$residuals)
+qqnorm(values.fit.arima0_2_2$residuals)
+qqline(values.fit.arima0_2_2$residuals, col="cyan")
+
+summary(values.fit.arima0_2_4)
+accuracy(values.fit.arima0_2_4)
+# BIC
+AIC(values.fit.arima0_2_4, k=log(length(values)))
+#arima residuals analysis
+par(mfrow=c(2,2))
+acf(values.fit.arima0_2_4$residuals)
+pacf(values.fit.arima0_2_4$residuals)
+plot(values.fit.arima0_2_4$residuals)
+qqnorm(values.fit.arima0_2_4$residuals)
+qqline(values.fit.arima0_2_4$residuals, col="cyan")
+```
+maybe something in between...
+```{r}
+values.fit.arima0_1_2 <- arima(values, order=c(0,1,2)) 
+
+
+summary(values.fit.arima0_1_2)
+accuracy(values.fit.arima0_1_2)
+
+#arima 012 residuals analysis
+par(mfrow=c(2,2))
+acf(values.fit.arima0_1_2$residuals)
+pacf(values.fit.arima0_1_2$residuals)
+plot(values.fit.arima0_1_2$residuals)
+qqnorm(values.fit.arima0_1_2$residuals)
+qqline(values.fit.arima0_1_2$residuals, col="cyan")
+```
+```{r}
+values.fit.arima0_1_4 <- arima(values, order=c(0,1,4)) 
+
+
+summary(values.fit.arima0_1_4)
+accuracy(values.fit.arima0_1_4)
+
+#arima 021 residuals analysis
+par(mfrow=c(2,2))
+acf(values.fit.arima0_1_4$residuals)
+pacf(values.fit.arima0_1_4$residuals)
+plot(values.fit.arima0_1_4$residuals)
+qqnorm(values.fit.arima0_1_4$residuals)
+qqline(values.fit.arima0_1_4$residuals, col="cyan")
+```
+
+##Model Comparison
+
+Although we are able to compute AIC for both ARIMA and ETS models, we can't directly use it to compare between ETS and ARIMA models because they are in different model classes, and the likelihood is computed in different ways. 
+Instead, we can use time series cross validation:
+```{r}
+
+fets <- function(x, h) {
+  forecast(ets(x), h = h)
+}
+farima <- function(x, h) {
+  forecast(auto.arima(x), h=h)
+}
+
+# Compute CV errors for ETS 
+res.ets <- tsCV(values, fets, h=5)
+# Compute CV errors for ARIMA 
+res.autoarima <- tsCV(values, fautoarima, h=5)
+
+# Find MSE of each model class
+mean(res.ets^2, na.rm=TRUE)
+mean(res.autoarima^2, na.rm=TRUE)
+
+```
+
+ETS produced MSE = 4,335,414
+While ARIMA's MSE = 4,780,749
+
+ETS performs better by this metric
+
+For final selected models
+```{r}
+fets <- function(x, h) {
+  forecast(ets(x, model="MAN"), h = h)
+}
+farima <- function(x, h, order) {
+  forecast(arima(x, order = c(0,2,2)), h = h)
+} 
+
+# Compute CV errors for ETS 
+res.MANets <- tsCV(values, fets, h=1)
+# Compute CV errors for ARIMA 
+res.arima0_2_2 <- tsCV(values, farima, h=1)
+
+# Find MSE of each model class
+sqrt(mean(res.MANets^2, na.rm=TRUE))
+sqrt(mean(res.arima0_2_2^2, na.rm=TRUE))
+res.MANets
+```
+
+###Forecasting
+
+ETS
+```{r}
+forecast.fit.MANets <- forecast(values.fit.MANets, h=3, bootstrap = TRUE)
+plot(forecast.fit.MANets)
+lines(values.holdout, col="tomato", lwd=2)
+accuracy(forecast.fit.MANets, values.holdout)
+
+forecast.fit.arima0_2_2 <- forecast(values.fit.arima0_2_2, h=3, bootstrap = TRUE)
+plot(forecast.fit.arima0_2_2)
+lines(values.holdout, col="tomato", lwd=2)
+accuracy(forecast.fit.arima0_2_2, values.holdout)
+```
+prediction intervals:
+
+```{r}
+values.holdout
+forecast.fit.MANets
+forecast.fit.arima0_2_2
+```
+
+

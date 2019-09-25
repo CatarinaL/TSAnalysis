@@ -1,0 +1,367 @@
+---
+title: "Asylum Seekers Entering the EU"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+#  1. Exploratory Data Analysis  
+  
+***
+  
+## 1.1. Data Source, Headers and Labels  
+
+***
+
+**DATASET** "Asylum and first time asylum applicants by citizenship, age and sex Monthly data (rounded) [migr_asyappctzm]"  
+**LAST UPDATE* **19.03.19 06:51:45   
+**EXTRACTION DATE** 19.03.19 13:19:35   
+**SOURCE OF DATA** [Eurostat](http://appsso.eurostat.ec.europa.eu/nui/show.do?query=BOOKMARK_DS-055296_QID_3F379849_UID_-3F171EB0&layout=TIME,C,X,0;GEO,L,Y,0;CITIZEN,L,Z,0;SEX,L,Z,1;AGE,L,Z,2;ASYL_APP,L,Z,3;UNIT,L,Z,4;INDICATORS,C,Z,5;&zSelection=DS-055296UNIT,PER;DS-055296SEX,T;DS-055296ASYL_APP,ASY_APP;DS-055296CITIZEN,EXT_EU28;DS-055296INDICATORS,OBS_FLAG;DS-055296AGE,TOTAL;&rankName1=UNIT_1_2_-1_2&rankName2=AGE_1_2_-1_2&rankName3=CITIZEN_1_2_-1_2&rankName4=INDICATORS_1_2_-1_2&rankName5=ASYL-APP_1_2_-1_2&rankName6=SEX_1_2_-1_2&rankName7=TIME_1_0_0_0&rankName8=GEO_1_2_0_1&sortC=ASC_-1_FIRST&rStp=&cStp=&rDCh=&cDCh=&rDM=true&cDM=true&footnes=false&empty=false&wai=false&time_mode=NONE&time_most_recent=false&lang=EN&cfo=%23%23%23%2C%23%23%23.%23%23%23)  
+
+***
+
+Attribute       |   Values
+-------         |   -------
+TIME            | "2008M01" to "2018M12"
+GEO             | "European Union - 28 countries"
+CITIZEN         | "Extra-EU28"
+SEX             | "Total", "Males", "Females"
+AGE             | "Total"
+ASYL_APP        | "Asylum applicant", "First time applicant"
+UNIT"           | "Person"
+
+No footnotes available.
+
+Available flags: 
+
+* b,"break in time series"
+* c,"confidential"
+* d,"definition differs, see metadata"
+* e,"estimated" 
+* f,"forecast"
+* n,"not significant"
+* p,"provisional"
+* r,"revised"
+* s,"Eurostat estimate"
+* u,"low reliability"
+* z,"not applicable"
+* Special value: ":","not available"
+
+***
+
+## 1.2 Reading the data
+
+```{r}
+#set working directory
+setwd("~/DIT/Time Series 2 Forecasting/Project/2-Trend and seasonality")
+
+#Graphical Parameters: For colours, color specifications, check colors() or, even better, demo(colors)
+
+library(readr)
+library(forecast)
+library(tseries)
+library(mgcv)
+
+
+datafile <- read_csv("migr_asylum_applicant_EU28/migr_asyappctzm_1_Data.csv")
+
+head(datafile)
+```
+All column names:
+
+```{r}
+names(datafile)
+```
+Convert the values into a time series
+Plot Values against Time
+```{r}
+values = datafile[9]
+values = ts(values, start=c(2008, 1), end=c(2018, 12), frequency=12)
+ts.plot(values, main="Asylum Applications to EU28 Countries 2008-2018", ylab="Number of Applications")
+summary(values)
+end(values)
+```
+***
+
+# 2. Smoothing the data
+
+We can use smoothing to reduce the volatility in our observed data and making it into a more stable and predictable series.
+
+## Trend Analysis - non-parametric
+```{r}
+#Create equally spaced time points for fitting trends
+time.pts = c(1:length(values))
+time.pts = c(time.pts - min(time.pts))/max(time.pts)
+``` 
+
+### Fitting a moving average, kernel smoothing, loess and splines smoothing
+
+```{r}
+#define mav/smoothing methods, and fit
+values.mafilter.fit = filter(values, filter = rep(1/4, 4), sides = 2)
+
+
+ma.fit = ma(values, order=2, centre=TRUE)
+values.fit.ma = ts(ma.fit, start=c(2008, 1), frequency=12)
+
+ksmooth.fit = ksmooth(time.pts, values, kernel = "box", bandwidth = 0.2)
+values.fit.ksmooth = ts(ksmooth.fit$y,start=c(2008, 1),frequency=12)
+
+loess.fit = loess(as.matrix(values)~time.pts, data=values, span=0.2)
+values.fit.loess = ts(predict(loess.fit), start=c(2008, 1), frequency=12)
+
+gam.fit = gam(values~s(time.pts))
+values.fit.gam = ts(fitted(gam.fit),start=c(2008, 1),frequency=12) 
+```
+Plotting
+```{r}
+# plot fits against values
+ts.plot(values,ylab="# of Applications", main="Observed Values vs smoothing methods")
+lines(values.fit.ksmooth,lwd=1, lty=4 ,col="purple")
+lines(values.mafilter.fit, col="red")
+lines(values.fit.loess, col="orange", lty=4)
+lines(values.fit.gam, col="violet")
+lines(values.fit.ma, col="cyan", lwd=3)
+legend(x="topleft",c("kernel smoothing", "filter", "loess", "gam", "mav"),lty = c(4, 1), col=c("purple","red", "orange", "violet", "cyan"))
+#values.fit.mav is the ma dataframe (type of the objects is float) with the transformed values for each entry
+#ablines is an a, b line graphing function, a is y intercept and b is slope
+```
+It's a matter of balancing smoothness to make predictability easier and accuracy. Pick filter(red) or moving average(cyan).
+
+***
+
+# 3. Decomposing the data
+
+Trend component, seasonal component and residuals (random/white noise). We assume this series is additive (instead of multiplicative).
+
+``` {r}
+values.ma.decomp = decompose(values.fit.ma, type=c("additive"))
+plot(values.ma.decomp)
+```
+
+A more detailed decomposition of this time-series can be seen below by using STL - Seasonal Decomposition of Time Series by LOESS:
+
+``` {r}
+values.decomp.stl <- stl(na.omit(values.fit.ma[, 1]), s.window="periodic")
+plot(values.decomp.stl)
+```
+
+Using the decomposed time series, we can subtract the $seasonal component from the data and de-seasonalize it - which can be useful to apply an ARIMA process, instead of SARIMA.
+
+```{r}
+values.deseason = seasadj(values.decomp.stl)
+plot(values.deseason, main="Deseasonalized time series")
+print(values.decomp.stl)
+```
+The additive seasonal coefficients for each month are:
+
+Jan  -5309.7893  
+Feb  -5025.1317  
+Mar  -5391.2925  
+Apr  -5792.7941  
+May  -4342.8346  
+Jun   -747.0787  
+Jul   3294.3252  
+Aug   6789.0248  
+Sep   8908.2448  
+Oct   7890.9851  
+Nov   2875.5202  
+Dec  -3149.1758
+
+***
+# 4. Is the data stationary?
+
+> "If we fit a stationary model to data, we assume our data are a realization of a stationary process. So our first step in an analysis should be to check whether there is any evidence of a trend or seasonal effects and, if there is, remove them."
+
+``` {r}
+values.fit.ma <- ts(na.omit(values.fit.ma), frequency=12, start=c(2008, 1))
+acf(values.fit.ma)
+#adf.test(values.fit.ma)
+```
+
+The data doesn´t appear to be stationary - it is apparent that mean and variance change over time. Looking at the ACF plot we can also reach the same conclusion, given there is no sharp drop in the values, but instead a smooth decay. So we need to transform our data to make it more stationary in order to use it for ARIMA models, for instance. This is further confirmed by running the ADF test: with a p-value = 0.7279 we can't reject the null hypothesis of non-stationarity.
+
+``` {r}
+adf.test(values.fit.ma)
+```
+
+### Making the data stationary
+
+Some of the possible mathematical transforms include: differencing, log (and Box-Cox), moving average, percent change, lag, or cumulative sum.
+
+### Differencing
+seasonal differencing
+```{r}
+values_diff12 = diff(values.fit.ma, lag = 12)
+tm <- cbind(values, values_diff12)
+plot(tm)
+```
+trend remains, take 1st difference
+```{r}
+values_diff12_1 = diff(values_diff12)
+tm <- cbind(values, values_diff12, values_diff12_1)
+plot(tm)
+```
+A first difference seems to suffice here, but let's check again to confirm the visual inspection by using an ACF plot and ADF test:
+
+``` {r}
+acf(na.omit(values_diff12_1), main="ACF for series after 1st difference")
+adf.test(na.omit(values_diff12_1))
+```
+
+Both the ACF plot and ADF test confirm non-stationarity after the first difference. There's a sort of pattern going on on this ACF plot, probably due to the seasonal component - not a pure SMA process, indicates AR. 
+
+```{r}
+diff.values <- na.omit(values_diff12_1)
+par(mfrow=c(2,1))
+acf(diff.values, main="")
+pacf(diff.values, main="")
+```
+A relatively slow decay until lag 6, might indicate a AR of order 6. Negative spike at lag 1 is possible sAR(1) term, it repeats.
+
+***
+
+# 5. Model
+
+## SARIMA(p, d, q)(P, D, Q) order
+
+Try for up to 1 SAR, 1 difference, 1 seasonal D, 1-6 AR, review ACF and PACF if no good fits found.
+
+```{r}
+#start with SAR(1)
+values.fit.sarima1 <- arima(values.fit.ma, order=c(1, 1, 0), seasonal = list(order = c(1, 1, 0), period = 12))
+values.fit.sarima1
+
+#residuals
+tsdisplay(residuals(values.fit.sarima1), lag.max=45, main='SARIMA Model 1 Residuals')
+
+#forecast accuracy
+forecast.sarima1 <- forecast(values.fit.sarima1, h=12) #12months
+accuracy(forecast.sarima1)
+```
+```{r}
+#1 ar wasnt good, look at 3
+values.fit.sarima2 <- arima(values.fit.ma, order=c(3, 1, 0), seasonal = list(order = c(1, 1, 0), period = 12))
+values.fit.sarima2
+
+#residuals
+tsdisplay(residuals(values.fit.sarima2), lag.max=45, main='SARIMA Model 2 Residuals')
+
+#forecast accuracy
+forecast.sarima2 <- forecast(values.fit.sarima2, h=12) #12months
+accuracy(forecast.sarima2)
+```
+Results aren't very good
+
+```{r}
+#ar6
+values.fit.sarima3 <- arima(values.fit.ma, order=c(6, 1, 0), seasonal = list(order = c(1, 1, 0), period = 12))
+values.fit.sarima3
+
+#residuals
+tsdisplay(residuals(values.fit.sarima3), lag.max=45, main='SARIMA Model 3 Residuals')
+
+#forecast accuracy
+forecast.sarima3 <- forecast(values.fit.sarima3, h=12) #12months
+accuracy(forecast.sarima3)
+```
+
+###Auto.arima
+Another method is to let auto.arima estimate parameters and see how they fit with our conclusions so far:
+
+```{r}
+values.fit.sarima4 <- auto.arima(ma.fit, seasonal = TRUE)
+values.fit.sarima4
+
+#residuals
+tsdisplay(residuals(values.fit.sarima4), lag.max=45, main='SARIMA Model 4 Residuals')
+
+```
+
+So, our initial interpretation of PACF was wrong....auto suggests 5 non-seasonal terms and 1 seasonal for AR. 
+.
+Let's keep this auto model and check for other types of models
+
+
+##Holt Winters
+
+Trying a different model, exponential smoothing
+
+```{r}
+values.fit.hw1 <- ets(values.fit.ma, model="MAM", damped=FALSE)
+values.fit.hw1
+plot(values.fit.hw1)
+accuracy(values.fit.hw1)
+```
+```{r}
+values.fit.hw2 <- ets(values.fit.ma, model="MAM",
+                      damped=TRUE) 
+values.fit.hw2
+plot(values.fit.hw2)
+accuracy(values.fit.hw2)
+
+```
+pick the model with damped trend, hw2, marginally better
+
+***
+# 6. Model evaluation and forecasting
+
+
+## Accuracy
+
+Compare with real observed values for the first three months of 2019
+
+```{r}
+data2019 <- read_csv("migr_asylum_applicant_EU28/migr_asyappctzm_2019_Data.csv")
+values2019 <- ts(data2019[8], start = c(2019, 1), frequency=12)
+plot.ts(values2019)
+```
+A strong downward trend
+
+## Forecasting using the chosen model(s)
+Forecasting the next 12 months 
+
+#Seasonal ARIMA
+```{r}
+forecast.values.sarima4 <- forecast(values.fit.sarima4, h=12)
+plot(forecast.values.sarima4)
+lines(values2019, col="cyan", lwd=2, lty=3)
+accuracy(forecast.values.sarima4, values2019)
+
+#test residuals
+Box.test(residuals(values.fit.sarima4), type="Ljung-Box") #test alternative hypothesis that there is non-zero autocorrelations
+
+par(mfrow=c(2,2))
+acf(na.omit(values.fit.sarima4$residuals))
+pacf(na.omit(values.fit.sarima4$residuals))
+plot(na.omit(values.fit.sarima4$residuals))
+qqnorm(na.omit(values.fit.sarima4$residuals))
+qqline(na.omit(values.fit.sarima4$residuals), col="cyan")
+```
+
+# Holt Winters seasonal smoothing
+
+
+```{r}
+
+plot(forecast(values.fit.hw2))
+lines(values2019, col="cyan", lwd=2, lty=3)
+accuracy(forecast(values.fit.hw2), values2019)
+#test residuals
+Box.test(residuals(values.fit.hw2), type="Ljung-Box") #test alternative hypothesis that there is non-zero autocorrelations
+
+par(mfrow=c(2,2))
+acf(values.fit.hw2$residuals)
+pacf(values.fit.hw2$residuals)
+plot(values.fit.hw2$residuals)
+qqnorm(values.fit.hw2$residuals)
+qqline(values.fit.hw2$residuals, col="cyan")
+```
+not great on the residuals correlations
+accuracy is bad on this test
+
+
+```{r}
+forecast.values.sarima4
+```
+
